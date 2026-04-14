@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Snowfall Clock</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #050a14; overflow: hidden; width: 100vw; height: 100vh; }
-  canvas { display: block; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#050a14; overflow:hidden; width:100vw; height:100vh; }
+  canvas { display:block; }
 </style>
 </head>
 <body>
@@ -16,109 +16,154 @@
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
 
-canvas.width  = window.innerWidth;
-canvas.height = window.innerHeight;
-window.addEventListener('resize', () => {
-  canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight;
-});
-
-// ── Digit patterns (7 rows × 5 cols) ──────────────────────────────────────
+// ── Digit patterns 7 rows × 5 cols ────────────────────────────────────────
 const DIGITS = {
-  '0': ['*****','*   *','*   *','*   *','*   *','*   *','*****'],
-  '1': ['  *  ','  *  ','  *  ','  *  ','  *  ','  *  ','  *  '],
-  '2': ['*****','    *','    *','*****','*    ','*    ','*****'],
-  '3': ['*****','    *','    *','*****','    *','    *','*****'],
-  '4': ['*   *','*   *','*   *','*****','    *','    *','    *'],
-  '5': ['*****','*    ','*    ','*****','    *','    *','*****'],
-  '6': ['*****','*    ','*    ','*****','*   *','*   *','*****'],
-  '7': ['*****','    *','    *','    *','    *','    *','    *'],
-  '8': ['*****','*   *','*   *','*****','*   *','*   *','*****'],
-  '9': ['*****','*   *','*   *','*****','    *','    *','*****'],
-  ':': ['     ',' * * ','     ',' * * ','     ',' * * ','     '],
-  ' ': ['     ','     ','     ','     ','     ','     ','     '],
+  '0':['*****','*   *','*   *','*   *','*   *','*   *','*****'],
+  '1':['  *  ','  *  ','  *  ','  *  ','  *  ','  *  ','  *  '],
+  '2':['*****','    *','    *','*****','*    ','*    ','*****'],
+  '3':['*****','    *','    *','*****','    *','    *','*****'],
+  '4':['*   *','*   *','*   *','*****','    *','    *','    *'],
+  '5':['*****','*    ','*    ','*****','    *','    *','*****'],
+  '6':['*****','*    ','*    ','*****','*   *','*   *','*****'],
+  '7':['*****','    *','    *','    *','    *','    *','    *'],
+  '8':['*****','*   *','*   *','*****','*   *','*   *','*****'],
+  '9':['*****','*   *','*   *','*****','    *','    *','*****'],
+  ':':['     ',' * * ','     ',' * * ','     ',' * * ','     '],
+  ' ':['     ','     ','     ','     ','     ','     ','     '],
 };
 
-// ── Flake chars — no o/degree, just punctuation ────────────────────────────
-const FLAKES = ['*', '+', '-', '.', "'", '"', 'x'];
+const FLAKES   = ['*', '+', '-', '.', "'", '"', 'x'];
+const DR = 7, DC = 5;
+const CHAR_GW  = DC + 1;   // 5 digit cols + 1 gap = 6 grid units per character
+const PILE_MS  = 10000;     // ms before a piled flake fades
+const FADE_MS  = 5000;
+const MAX_SNOW = 90;
 
-// Grid cell size for snapping
-const GRID = 12;
-
-const ROWS = 7, COLS = 5;
-
-function getCell() {
-  return Math.min(Math.floor(canvas.width / 52), 14);
-}
+// ── Layout state ───────────────────────────────────────────────────────────
+let CELL, gridW, gridH;
+let solidGrid;   // Uint8Array[gridH][gridW]  — 1 = digit segment
+let pileGrid;    // Array[gridH][gridW]        — null | {char,alpha,born}
+let clockGX, clockGY;  // clock top-left in grid coords
+let lastSec = -1;
 
 function getTimeString() {
-  const now = new Date();
-  const h = String(now.getHours()).padStart(2, '0');
-  const m = String(now.getMinutes()).padStart(2, '0');
-  const s = String(now.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
+  const n = new Date();
+  return String(n.getHours()).padStart(2,'0')   + ':' +
+         String(n.getMinutes()).padStart(2,'0') + ':' +
+         String(n.getSeconds()).padStart(2,'0');
 }
 
-function getClockBounds() {
-  const CELL  = getCell();
-  const GAP   = Math.floor(CELL * 1.0);
-  const charW = COLS * CELL + GAP;
-  const time  = getTimeString();
-  const totalW = time.length * charW - GAP;
-  const totalH = ROWS * CELL;
-  const startX = (canvas.width  - totalW) / 2;
-  const startY = canvas.height  * 0.55;
-  return { startX, startY, charW, totalW, totalH, CELL, GAP, time };
+function setup() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  CELL  = Math.max(8, Math.min(Math.floor(canvas.width / 58), 14));
+  gridW = Math.ceil(canvas.width  / CELL) + 2;
+  gridH = Math.ceil(canvas.height / CELL) + 2;
+
+  solidGrid = Array.from({length: gridH}, () => new Uint8Array(gridW));
+  pileGrid  = Array.from({length: gridH}, () => new Array(gridW).fill(null));
+
+  // Snap clock origin to grid
+  const time   = getTimeString();
+  const totalGW = time.length * CHAR_GW - 1;
+  clockGX = Math.round((gridW - totalGW) / 2);
+  clockGY = Math.round(gridH * 0.50);
+
+  rebuildSolid();
+}
+setup();
+window.addEventListener('resize', setup);
+
+// ── Solid grid ─────────────────────────────────────────────────────────────
+function rebuildSolid() {
+  for (let r = 0; r < gridH; r++) solidGrid[r].fill(0);
+
+  const time = getTimeString();
+  for (let ci = 0; ci < time.length; ci++) {
+    const pat = DIGITS[time[ci]] || DIGITS[' '];
+    for (let row = 0; row < DR; row++) {
+      for (let col = 0; col < pat[row].length; col++) {
+        if (pat[row][col] === '*') {
+          const gx = clockGX + ci * CHAR_GW + col;
+          const gy = clockGY + row;
+          if (gy >= 0 && gy < gridH && gx >= 0 && gx < gridW)
+            solidGrid[gy][gx] = 1;
+        }
+      }
+    }
+  }
+
+  // Clear any piles that are now inside a solid cell
+  for (let gy = 0; gy < gridH; gy++)
+    for (let gx = 0; gx < gridW; gx++)
+      if (solidGrid[gy][gx] && pileGrid[gy][gx]) pileGrid[gy][gx] = null;
 }
 
-// ── Falling snowflakes ─────────────────────────────────────────────────────
-const MAX    = 130;
+// ── Collision ──────────────────────────────────────────────────────────────
+function isBlocked(gx, gy) {
+  if (gy >= gridH) return true;          // floor
+  if (gx < 0 || gx >= gridW) return true; // walls
+  if (gy < 0) return false;
+  return solidGrid[gy][gx] === 1 || pileGrid[gy][gx] !== null;
+}
+
+// ── Re-evaluate piles after digit change ───────────────────────────────────
+// Process bottom-to-top so cascade works correctly
+function evalPiles() {
+  for (let gy = gridH - 1; gy >= 0; gy--) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const p = pileGrid[gy][gx];
+      if (!p) continue;
+      // Still supported?
+      if (!isBlocked(gx, gy + 1)) {
+        flakes.push({
+          gx, gy,
+          char: p.char, alpha: p.alpha,
+          ticker: 0,
+          rate: 18 + Math.floor(Math.random() * 18),
+          glitchCD: 0,
+        });
+        pileGrid[gy][gx] = null;
+      }
+    }
+  }
+}
+
+// ── Falling flakes ─────────────────────────────────────────────────────────
 const flakes = [];
-const piled  = [];
-
-// Snap to grid
-function snap(v) { return Math.round(v / GRID) * GRID; }
-
-function randomFlake() {
-  return {
-    x:        snap(Math.random() * canvas.width),
-    y:        -GRID,
-    char:     FLAKES[Math.floor(Math.random() * FLAKES.length)],
-    // Speed in grid units per tick — always a whole number of rows
-    stepY:    GRID,                                        // always 1 grid row
-    size:     11,
-    alpha:    0.5 + Math.random() * 0.4,
-    ticker:   0,        // counts animation frames
-    rate:     14 + Math.floor(Math.random() * 14),        // frames between steps
-    // Occasional lateral glitch
-    glitchCD: 0,
-  };
-}
 
 setInterval(() => {
-  if (flakes.length < MAX) flakes.push(randomFlake());
-}, 50);
+  if (flakes.length < MAX_SNOW) {
+    flakes.push({
+      gx:       Math.floor(Math.random() * gridW),
+      gy:       -1,
+      char:     FLAKES[Math.floor(Math.random() * FLAKES.length)],
+      alpha:    0.5 + Math.random() * 0.4,
+      ticker:   0,
+      rate:     14 + Math.floor(Math.random() * 14),
+      glitchCD: 0,
+    });
+  }
+}, 90);
 
-// ── Draw clock digits ──────────────────────────────────────────────────────
+// ── Clock draw ─────────────────────────────────────────────────────────────
 function drawClock() {
-  const { startX, startY, charW, CELL, time } = getClockBounds();
-
+  const time = getTimeString();
   ctx.save();
-  ctx.shadowBlur  = 18;
-  ctx.shadowColor = 'rgba(140, 200, 255, 0.6)';
-  ctx.font        = `bold ${CELL + 1}px monospace`;
+  ctx.font        = `bold ${CELL}px monospace`;
   ctx.textAlign   = 'left';
+  ctx.shadowBlur  = 18;
+  ctx.shadowColor = 'rgba(140,200,255,0.6)';
 
   for (let ci = 0; ci < time.length; ci++) {
-    const ch      = time[ci];
-    const pattern = DIGITS[ch] || DIGITS[' '];
-    const baseX   = startX + ci * charW;
-
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < pattern[row].length; col++) {
-        if (pattern[row][col] === '*') {
-          ctx.fillStyle = `rgba(190, 225, 255, ${0.75 + Math.random() * 0.25})`;
-          ctx.fillText('*', baseX + col * CELL, startY + row * CELL);
+    const pat  = DIGITS[time[ci]] || DIGITS[' '];
+    const bx   = (clockGX + ci * CHAR_GW) * CELL;
+    for (let row = 0; row < DR; row++) {
+      for (let col = 0; col < pat[row].length; col++) {
+        if (pat[row][col] === '*') {
+          ctx.fillStyle = `rgba(190,225,255,${0.75 + Math.random() * 0.25})`;
+          ctx.fillText('*', bx + col * CELL, (clockGY + row) * CELL);
         }
       }
     }
@@ -126,91 +171,106 @@ function drawClock() {
   ctx.restore();
 }
 
-// ── Draw piled snow ────────────────────────────────────────────────────────
-function drawPiled(now) {
-  ctx.textAlign = 'center';
-  for (let i = piled.length - 1; i >= 0; i--) {
-    const p   = piled[i];
-    const age = now - p.born;
-
-    if (age > p.life) { piled.splice(i, 1); continue; }
-
-    // Fade out in last 800ms
-    const fadeStart = p.life - 800;
-    const alpha = age > fadeStart
-      ? p.alpha * (1 - (age - fadeStart) / 800)
-      : p.alpha;
-
-    ctx.font      = `${p.size}px monospace`;
-    ctx.fillStyle = `rgba(220, 240, 255, ${alpha})`;
-    ctx.fillText(p.char, p.x, p.y);
-  }
-}
-
 // ── Main loop ──────────────────────────────────────────────────────────────
 function draw(now) {
-  ctx.fillStyle = 'rgba(5, 10, 20, 0.22)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const { startX, startY, totalW, totalH, CELL } = getClockBounds();
-
-  // Only pile just above the clock
-  const pileTop    = startY - CELL * 2.5;
-  const pileBottom = startY - CELL * 0.8;
-  const pileLeft   = startX - CELL;
-  const pileRight  = startX + totalW + CELL;
-
-  // Snow pass
-  ctx.textAlign = 'center';
-  for (let i = flakes.length - 1; i >= 0; i--) {
-    const f = flakes[i];
-
-    f.ticker++;
-    if (f.ticker >= f.rate) {
-      f.ticker = 0;
-      f.y += f.stepY;
-
-      // Random lateral glitch — snap one grid unit left or right
-      f.glitchCD--;
-      if (f.glitchCD <= 0 && Math.random() < 0.08) {
-        const dir = Math.random() < 0.5 ? -GRID : GRID;
-        f.x = snap(f.x + dir);
-        f.glitchCD = 8 + Math.floor(Math.random() * 16);
-      }
-
-      // Random char swap — digital noise
-      if (Math.random() < 0.05) {
-        f.char = FLAKES[Math.floor(Math.random() * FLAKES.length)];
-      }
-    }
-
-    const onTop = f.x >= pileLeft && f.x <= pileRight
-               && f.y >= pileTop  && f.y <= pileBottom;
-
-    if (onTop && Math.random() < 0.02) {
-      // Stick to clock for 2–5 seconds
-      piled.push({
-        x:    f.x,
-        y:    f.y,
-        char: f.char,
-        size: f.size,
-        alpha: Math.min(f.alpha + 0.2, 1),
-        born: now,
-        life: 2000 + Math.random() * 3000,
-      });
-      flakes.splice(i, 1);
-      continue;
-    }
-
-    ctx.font      = `${f.size}px monospace`;
-    ctx.fillStyle = `rgba(200, 230, 255, ${f.alpha})`;
-    ctx.fillText(f.char, f.x, f.y);
-
-    if (f.y > canvas.height + 30) flakes.splice(i, 1);
+  const sec = new Date().getSeconds();
+  if (sec !== lastSec) {
+    lastSec = sec;
+    rebuildSolid();
+    evalPiles();
   }
 
+  // Background fade
+  ctx.fillStyle = 'rgba(5,10,20,0.22)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // ── Update + draw falling flakes ────────────────────────────────────────
+  ctx.font      = `${CELL}px monospace`;
+  ctx.textAlign = 'left';
+
+  for (let i = flakes.length - 1; i >= 0; i--) {
+    const f = flakes[i];
+    f.ticker++;
+
+    if (f.ticker >= f.rate) {
+      f.ticker = 0;
+
+      const canDown  = !isBlocked(f.gx,     f.gy + 1);
+      const canDownL = !isBlocked(f.gx - 1, f.gy + 1);
+      const canDownR = !isBlocked(f.gx + 1, f.gy + 1);
+
+      if (canDown) {
+        // Straight down — gravity wins
+        f.gy++;
+      } else if (canDownL && canDownR) {
+        // Both diagonals open — pick randomly (slide off round tops)
+        f.gx += Math.random() < 0.5 ? -1 : 1;
+        f.gy++;
+      } else if (canDownL) {
+        f.gx--; f.gy++;
+      } else if (canDownR) {
+        f.gx++; f.gy++;
+      } else {
+        // Fully blocked — pile here
+        if (f.gy >= 0 && f.gy < gridH && f.gx >= 0 && f.gx < gridW) {
+          pileGrid[f.gy][f.gx] = { char: f.char, alpha: f.alpha, born: now };
+        }
+        flakes.splice(i, 1);
+        continue;
+      }
+
+      // Occasional char glitch (digital noise)
+      if (--f.glitchCD <= 0 && Math.random() < 0.05) {
+        f.char    = FLAKES[Math.floor(Math.random() * FLAKES.length)];
+        f.glitchCD = 10 + Math.floor(Math.random() * 15);
+      }
+    }
+
+    if (f.gy >= gridH) { flakes.splice(i, 1); continue; }
+
+    ctx.fillStyle = `rgba(200,230,255,${f.alpha})`;
+    ctx.fillText(f.char, f.gx * CELL, f.gy * CELL);
+  }
+
+  // ── Draw clock ────────────────────────────────────────────────────────────
   drawClock();
-  drawPiled(now);
+
+  // ── Draw + expire piled flakes (on top of clock) ─────────────────────────
+  ctx.font      = `${CELL}px monospace`;
+  ctx.textAlign = 'left';
+
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      const p = pileGrid[gy][gx];
+      if (!p) continue;
+
+      const age = now - p.born;
+
+      if (age > PILE_MS) {
+        pileGrid[gy][gx] = null;
+        // If there's a pile directly above, let it fall
+        if (gy > 0 && pileGrid[gy - 1][gx]) {
+          const above = pileGrid[gy - 1][gx];
+          flakes.push({
+            gx, gy: gy - 1,
+            char: above.char, alpha: above.alpha,
+            ticker: 0,
+            rate: 14 + Math.floor(Math.random() * 14),
+            glitchCD: 0,
+          });
+          pileGrid[gy - 1][gx] = null;
+        }
+        continue;
+      }
+
+      const fade  = age > PILE_MS - FADE_MS
+        ? p.alpha * (1 - (age - (PILE_MS - FADE_MS)) / FADE_MS)
+        : p.alpha;
+
+      ctx.fillStyle = `rgba(220,240,255,${fade})`;
+      ctx.fillText(p.char, gx * CELL, gy * CELL);
+    }
+  }
 
   requestAnimationFrame(draw);
 }
